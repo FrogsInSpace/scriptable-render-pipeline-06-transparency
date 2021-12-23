@@ -1,6 +1,4 @@
 ﻿using UnityEditor;
-using UnityEditor.Experimental.Rendering;
-using UnityEngine;
 
 [CustomEditor(typeof(MyPipelineAsset))]
 public class MyPipelineAssetEditor : Editor {
@@ -15,20 +13,25 @@ public class MyPipelineAssetEditor : Editor {
 		fourCascadesSplit = serializedObject.FindProperty("fourCascadesSplit");
 	}
 
-	public override void OnInspectorGUI () {
+	public override void OnInspectorGUI ()
+	{
 		DrawDefaultInspector();
 
-		switch (shadowCascades.enumValueIndex) {
-			case 0: return;
-			case 1:
-				CoreEditorUtils.DrawCascadeSplitGUI<float>(ref twoCascadesSplit);
-				break;
-			case 2:
-				CoreEditorUtils.DrawCascadeSplitGUI<Vector3>(
-					ref fourCascadesSplit
-				);
-				break;
-		}
+		EditorGUILayout.LabelField("* Missing ShadowCascadeSplitGUI *"  );
+
+			// DrawCascadeSplitGUI is not there any longer
+			//switch (shadowCascades.enumValueIndex) 
+			//{
+			//	case 0: return;
+			//	case 1:
+			//		CoreEditorUtils.DrawCascadeSplitGUI<float>(ref twoCascadesSplit);
+			//		break;
+			//	case 2:
+			//		CoreEditorUtils.DrawCascadeSplitGUI<Vector3>(
+			//			ref fourCascadesSplit
+			//		);
+			//		break;
+			//}
 		serializedObject.ApplyModifiedProperties();
 	}
 }

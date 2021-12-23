@@ -44,7 +44,7 @@ public class MyPipeline : RenderPipeline {
 	Vector4[] visibleLightAttenuations = new Vector4[maxVisibleLights];
 	Vector4[] visibleLightSpotDirections = new Vector4[maxVisibleLights];
 
-	CullResults cull;
+	CullingResults cull;
 
 	RenderTexture shadowMap, cascadedShadowMap;
 	Vector4[] shadowData = new Vector4[maxVisibleLights];
@@ -62,7 +62,8 @@ public class MyPipeline : RenderPipeline {
 		name = "Render Shadows"
 	};
 
-	DrawRendererFlags drawFlags;
+	bool dynamicBatching;
+	bool instancing;
 
 	int shadowMapSize;
 	int shadowTileCount;
@@ -82,23 +83,19 @@ public class MyPipeline : RenderPipeline {
 			worldToShadowCascadeMatrices[4].m33 = 1f;
 		}
 
-		if (dynamicBatching) {
-			drawFlags = DrawRendererFlags.EnableDynamicBatching;
-		}
-		if (instancing) {
-			drawFlags |= DrawRendererFlags.EnableInstancing;
-		}
+
+		this.dynamicBatching = dynamicBatching;
+		this.instancing = instancing;
+
 		this.shadowMapSize = shadowMapSize;
 		this.shadowDistance = shadowDistance;
 		this.shadowCascades = shadowCascades;
 		this.shadowCascadeSplit = shadowCascasdeSplit;
 	}
 
-	public override void Render (
+	protected override void Render (
 		ScriptableRenderContext renderContext, Camera[] cameras
 	) {
-		base.Render(renderContext, cameras);
-
 		foreach (var camera in cameras) {
 			Render(renderContext, camera);
 		}
@@ -106,7 +103,8 @@ public class MyPipeline : RenderPipeline {
 
 	void Render (ScriptableRenderContext context, Camera camera) {
 		ScriptableCullingParameters cullingParameters;
-		if (!CullResults.GetCullingParameters(camera, out cullingParameters)) {
+
+		if (!camera.TryGetCullingParameters(camera, out cullingParameters)) {
 			return;
 		}
 		cullingParameters.shadowDistance =
@@ -118,8 +116,9 @@ public class MyPipeline : RenderPipeline {
 		}
 #endif
 
-		CullResults.Cull(ref cullingParameters, context, ref cull);
-		if (cull.visibleLights.Count > 0) {
+		cull = context.Cull(ref cullingParameters );
+		
+		if ( cull.visibleLights.Length > 0) {
 			ConfigureLights();
 			if (mainLightExists) {
 				RenderCascadedShadows(context);
@@ -171,32 +170,35 @@ public class MyPipeline : RenderPipeline {
 		context.ExecuteCommandBuffer(cameraBuffer);
 		cameraBuffer.Clear();
 
-		var drawSettings = new DrawRendererSettings(
-			camera, new ShaderPassName("SRPDefaultUnlit")
-		) {
-			flags = drawFlags
-		};
-		if (cull.visibleLights.Count > 0) {
-			drawSettings.rendererConfiguration =
-				RendererConfiguration.PerObjectLightIndices8;
-		}
-		drawSettings.sorting.flags = SortFlags.CommonOpaque;
-
-		var filterSettings = new FilterRenderersSettings(true) {
-			renderQueueRange = RenderQueueRange.opaque
+		var sortingSettings = new SortingSettings(camera)
+		{
+			criteria = SortingCriteria.CommonOpaque
 		};
 
-		context.DrawRenderers(
-			cull.visibleRenderers, ref drawSettings, filterSettings
-		);
+		var drawingSettings = new DrawingSettings(new ShaderTagId("SRPDefaultUnlit"), sortingSettings)
+		{
+			enableDynamicBatching = dynamicBatching,
+			enableInstancing = instancing
+		};
+
+		// JW: whats the equivalent now ?
+		//if (cull.visibleLights.Length > 0) {
+
+		//	drawingSettings.rendererConfiguration =
+		//		RendererConfiguration.PerObjectLightIndices8;
+		//}
+
+		var filteringSettings = new FilteringSettings(RenderQueueRange.opaque );
+
+		context.DrawRenderers(	cull, ref drawingSettings, ref filteringSettings );
 
 		context.DrawSkybox(camera);
 
-		drawSettings.sorting.flags = SortFlags.CommonTransparent;
-		filterSettings.renderQueueRange = RenderQueueRange.transparent;
-		context.DrawRenderers(
-			cull.visibleRenderers, ref drawSettings, filterSettings
-		);
+		sortingSettings.criteria = SortingCriteria.CommonTransparent;
+		
+		filteringSettings.renderQueueRange = RenderQueueRange.transparent;
+		
+		context.DrawRenderers(	cull, ref drawingSettings, ref filteringSettings 	);
 
 		DrawDefaultPipeline(context, camera);
 
@@ -219,7 +221,7 @@ public class MyPipeline : RenderPipeline {
 	void ConfigureLights () {
 		mainLightExists = false;
 		shadowTileCount = 0;
-		for (int i = 0; i < cull.visibleLights.Count; i++) {
+		for (int i = 0; i < cull.visibleLights.Length; i++) {
 			if (i == maxVisibleLights) {
 				break;
 			}
@@ -230,7 +232,7 @@ public class MyPipeline : RenderPipeline {
 			Vector4 shadow = Vector4.zero;
 
 			if (light.lightType == LightType.Directional) {
-				Vector4 v = light.localToWorld.GetColumn(2);
+				Vector4 v = light.localToWorldMatrix.GetColumn(2);
 				v.x = -v.x;
 				v.y = -v.y;
 				v.z = -v.z;
@@ -244,12 +246,12 @@ public class MyPipeline : RenderPipeline {
 			}
 			else {
 				visibleLightDirectionsOrPositions[i] =
-					light.localToWorld.GetColumn(3);
+					light.localToWorldMatrix.GetColumn(3);
 				attenuation.x = 1f /
 					Mathf.Max(light.range * light.range, 0.00001f);
 
 				if (light.lightType == LightType.Spot) {
-					Vector4 v = light.localToWorld.GetColumn(2);
+					Vector4 v = light.localToWorldMatrix.GetColumn(2);
 					v.x = -v.x;
 					v.y = -v.y;
 					v.z = -v.z;
@@ -272,12 +274,14 @@ public class MyPipeline : RenderPipeline {
 			shadowData[i] = shadow;
 		}
 
-		if (mainLightExists || cull.visibleLights.Count > maxVisibleLights) {
-			int[] lightIndices = cull.GetLightIndexMap();
+		if (mainLightExists || cull.visibleLights.Length > maxVisibleLights) {
+			Unity.Collections.NativeArray<int> lightIndices = cull.GetLightIndexMap ( Unity.Collections.Allocator.Temp );
+
+
 			if (mainLightExists) {
 				lightIndices[0] = -1;
 			}
-			for (int i = maxVisibleLights; i < cull.visibleLights.Count; i++) {
+			for (int i = maxVisibleLights; i < cull.visibleLights.Length; i++) {
 				lightIndices[i] = -1;
 			}
 			cull.SetLightIndexMap(lightIndices);
@@ -312,7 +316,7 @@ public class MyPipeline : RenderPipeline {
 		shadowBuffer.SetGlobalFloat(
 			shadowBiasId, shadowLight.shadowBias
 		);
-		var shadowSettings = new DrawShadowsSettings(cull, 0);
+		var shadowDrawingSettings = new ShadowDrawingSettings( cull,0 );
 		var tileMatrix = Matrix4x4.identity;
 		tileMatrix.m00 = tileMatrix.m11 = 0.5f;
 
@@ -330,10 +334,14 @@ public class MyPipeline : RenderPipeline {
 			context.ExecuteCommandBuffer(shadowBuffer);
 			shadowBuffer.Clear();
 
-			cascadeCullingSpheres[i] =
-				shadowSettings.splitData.cullingSphere = splitData.cullingSphere;
+			ShadowSplitData spData = shadowDrawingSettings.splitData;
+
+			cascadeCullingSpheres[i] = spData.cullingSphere = splitData.cullingSphere;
+
+			shadowDrawingSettings.splitData = spData;
+
 			cascadeCullingSpheres[i].w *= splitData.cullingSphere.w;
-			context.DrawShadows(ref shadowSettings);
+			context.DrawShadows(ref shadowDrawingSettings);
 			CalculateWorldToShadowMatrix(
 				ref viewMatrix, ref projectionMatrix,
 				out worldToShadowCascadeMatrices[i]
@@ -399,7 +407,7 @@ public class MyPipeline : RenderPipeline {
 		int tileIndex = 0;
 		bool hardShadows = false;
 		bool softShadows = false;
-		for (int i = mainLightExists ? 1 : 0; i < cull.visibleLights.Count; i++) {
+		for (int i = mainLightExists ? 1 : 0; i < cull.visibleLights.Length; i++) {
 			if (i == maxVisibleLights) {
 				break;
 			}
@@ -439,9 +447,14 @@ public class MyPipeline : RenderPipeline {
 			context.ExecuteCommandBuffer(shadowBuffer);
 			shadowBuffer.Clear();
 
-			var shadowSettings = new DrawShadowsSettings(cull, i);
-			shadowSettings.splitData.cullingSphere = splitData.cullingSphere;
-			context.DrawShadows(ref shadowSettings);
+			var shadowDrawingSettings = new ShadowDrawingSettings(cull, i);
+
+			ShadowSplitData spData = shadowDrawingSettings.splitData;
+			spData.cullingSphere = splitData.cullingSphere;
+
+			shadowDrawingSettings.splitData = spData;
+
+			context.DrawShadows(ref shadowDrawingSettings);
 			CalculateWorldToShadowMatrix(
 				ref viewMatrix, ref projectionMatrix, out worldToShadowMatrices[i]
 			);
@@ -528,21 +541,22 @@ public class MyPipeline : RenderPipeline {
 				hideFlags = HideFlags.HideAndDontSave
 			};
 		}
-
-		var drawSettings = new DrawRendererSettings(
-			camera, new ShaderPassName("ForwardBase")
+		var drawingSettings = new DrawingSettings(
+			new ShaderTagId("ForwardBase"), new SortingSettings(camera)
 		);
-		drawSettings.SetShaderPassName(1, new ShaderPassName("PrepassBase"));
-		drawSettings.SetShaderPassName(2, new ShaderPassName("Always"));
-		drawSettings.SetShaderPassName(3, new ShaderPassName("Vertex"));
-		drawSettings.SetShaderPassName(4, new ShaderPassName("VertexLMRGBM"));
-		drawSettings.SetShaderPassName(5, new ShaderPassName("VertexLM"));
-		drawSettings.SetOverrideMaterial(errorMaterial, 0);
+		drawingSettings.SetShaderPassName(1, new ShaderTagId("PrepassBase"));
+		drawingSettings.SetShaderPassName(2, new ShaderTagId("Always"));
+		drawingSettings.SetShaderPassName(3, new ShaderTagId("Vertex"));
+		drawingSettings.SetShaderPassName(4, new ShaderTagId("VertexLMRGBM"));
+		drawingSettings.SetShaderPassName(5, new ShaderTagId("VertexLM"));
+		drawingSettings.overrideMaterial  = errorMaterial;
 
-		var filterSettings = new FilterRenderersSettings(true);
+		var filteringSettings = new FilteringSettings();
+
+
 
 		context.DrawRenderers(
-			cull.visibleRenderers, ref drawSettings, filterSettings
+			cull, ref drawingSettings, ref filteringSettings 
 		);
 	}
 }

@@ -1,5 +1,5 @@
 ﻿using UnityEngine;
-using UnityEngine.Experimental.Rendering;
+using UnityEngine.Rendering;
 
 [CreateAssetMenu(menuName = "Rendering/My Pipeline")]
 public class MyPipelineAsset : RenderPipelineAsset {
@@ -39,7 +39,7 @@ public class MyPipelineAsset : RenderPipelineAsset {
 	[SerializeField, HideInInspector]
 	Vector3 fourCascadesSplit = new Vector3(0.067f, 0.2f, 0.467f);
 
-	protected override IRenderPipeline InternalCreatePipeline () {
+	protected override RenderPipeline CreatePipeline () {
 		Vector3 shadowCascadeSplit = shadowCascades == ShadowCascades.Four ?
 			fourCascadesSplit : new Vector3(twoCascadesSplit, 0f);
 		return new MyPipeline(
